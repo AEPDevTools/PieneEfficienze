@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Verifica di piena efficienza – Generatore e-mail</title>
+<style>
+:root{--bg:#f4f6f9;--c:#fff;--t:#1d2733;--m:#64748b;--p:#0b5cab;--b:#d5dce6;--ok:#16794c;--w:#b45309;--e:#b91c1c}
+@media(prefers-color-scheme:dark){:root{--bg:#10151c;--c:#1a222d;--t:#e6ebf2;--m:#93a1b5;--p:#5aa2ee;--b:#2c3746;--ok:#4ade80;--w:#fbbf24;--e:#f87171}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--t)}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 20px;background:var(--c);border-bottom:1px solid var(--b);flex-wrap:wrap}
+h1{font-size:17px;margin:0}main{max-width:1000px;margin:0 auto;padding:16px}
+.card{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:14px;margin-bottom:14px}
+button{font:inherit;padding:6px 12px;border:1px solid var(--b);border-radius:6px;background:var(--c);color:var(--t);cursor:pointer}
+button.p{background:var(--p);color:#fff;border-color:var(--p)}button:disabled{opacity:.5;cursor:not-allowed}
+input,select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--b);border-radius:6px;background:var(--bg);color:var(--t);max-width:100%}
+textarea{width:100%;min-height:260px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.m{color:var(--m)}.ok{color:var(--ok)}.w{color:var(--w)}.e{color:var(--e)}
+.tag{display:inline-block;padding:1px 7px;border-radius:9px;background:var(--bg);border:1px solid var(--b);font-size:12px;margin:1px}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--b);padding:5px 6px;text-align:left;vertical-align:top}
+.modal{position:fixed;inset:0;background:#0008;display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:20px;z-index:9}
+.modal.on{display:flex}.box{background:var(--c);border-radius:10px;padding:16px;width:min(900px,100%)}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin:10px 0}.tabs button.on{background:var(--p);color:#fff}
+.grp.dis{opacity:.7}.big{font-size:15px}
+.bar{position:sticky;bottom:0;z-index:2;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--c);border:1px solid var(--b);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:0 -2px 8px #0002}
+.cfl{border-left:3px solid var(--w);padding-left:10px;margin:8px 0}td.k{width:30px}details{margin-top:6px}summary{cursor:pointer}
+</style></head><body>
+<script>
+/* ============ CONFIGURAZIONE DATABASE (modificare qui) ============ */
+/* Il database viene caricato SOLO da un file Excel scelto dall'utente sul proprio computer. */
+const DB_CONFIG={
+  nome:"Database locale",
+  mappa:{comp:"AEP_COMPETENTE",data:"DATA_FINE_VALIDITA",tens:"CODICE_LIVELLO_TENSIONE",ricerca:"NOME_ELEMENTO_GMD",nome:"NOME_ELEMENTO",tipo:"TIPO_ELEMENTO",tit:"UNITA_TITOLARE_IDUNITATITOLARE",rs:"RAGSOC_TITOLARE"},
+  filtri:{comp:"03",tens:"4"} // la data fine validità deve essere vuota
+};
+const FIELDS={comp:["Codice competente",1],data:["Data fine validità",1],tens:["Livello tensione",1],ricerca:["Codice di ricerca elemento",1],nome:["Nome elemento (per la mail)",1],tipo:["Tipologia elemento",0],tit:["Codice numerico titolare",1],rs:["Ragione sociale nel DB",0]};
+const TPL0={subject:"Richiesta verifica piena efficienza elettrodotti dedicati ad alimentazione di vasta porzione di carico per lavori su rete AT della {{LINEA_FUORI_SERVIZIO}}",
+body:"Buon pomeriggio,\n\ncome di consueto si richiede di segnalare lo stato degli elettrodotti ed eventuali criticità/anomalie rilevate che compromettano il normale funzionamento, in quanto saranno dedicati all’alimentazione di rilevante porzione di utenza. Nel caso, infatti, di perdita accidentale di tali collegamenti si verificherebbe disalimentazione diffusa d’utenza, con relativi costi di disalimentazione/mitigazione.\n\nNello specifico gli elementi di rete per i quali si chiede la verifica, per quanto di competenza, sono:\n\n{{ELENCO_ELEMENTI}}\n\nper il fuori servizio della {{LINEA_FUORI_SERVIZIO}} prevista per il periodo {{PERIODO_LAVORI}}.\n\nGrazie, un saluto."};
+const PH={TITOLARE:"nome del titolare",CODICE_TITOLARE:"codice numerico del titolare",CODICE_RICERCA:"codici ricercati (uno o più) degli elementi del titolare",ELENCO_ELEMENTI:"elenco NOME_ELEMENTO del titolare",LINEA_FUORI_SERVIZIO:"linea fuori servizio",PERIODO_LAVORI:"periodo dei lavori"};
+const CFG_FMT="vpe-config",CFG_VER=1; // formato e versione del file di configurazione esportato
+const ML0={on:true,name:"Mailing list ufficio",email:"",def:""}; // mailing list globale dell'ufficio (def: ""=non selezionato, "A", "CC")
+
+/* ============ STATO E PERSISTENZA ============ */
+const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const js=s=>esc(JSON.stringify(String(s))); // stringa JS sicura dentro un attributo HTML
+const LS="vpe_v1";
+let S={cfg:{mappa:{...DB_CONFIG.mappa},filtri:{...DB_CONFIG.filtri}},
+ owners:{},contacts:{},tpl:{...TPL0},linea:"linea 132 kV n. 875 PS Servola-Broletto",periodo:"",ml:{...ML0},mlSel:{}};
+try{const x=JSON.parse(localStorage.getItem(LS)||"null");if(x)S={...S,...x}}catch(e){}
+(function migra(){ // compatibilità con la versione precedente (configurazione colonne per "default"/"custom")
+ let c=S.cfg;if(c&&(c.default||c.custom))c=c[S.mode]||c.default||c.custom;
+ S.cfg={mappa:{...DB_CONFIG.mappa,...(c&&c.mappa||{})},filtri:{...DB_CONFIG.filtri,...(c&&c.filtri||{})}};
+ delete S.mode;S.owners=S.owners||{};S.contacts=S.contacts||{};S.mlSel=S.mlSel||{};S.ml={...ML0,...(S.ml||{})};S.tpl={...TPL0,...(S.tpl||{})}})();
+const save=()=>{try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}};
+let DB={name:"",sheet:"",rows:[],headers:[],ok:false,loaded:"",err:"",missing:[],valid:[],noTit:0}; // database in uso (solo in memoria)
+let PEND=null; // file Excel scelto in attesa di applicazione {wb,name}
+let RES=null,SEL=new Set(),DRAFTS=[];
+let CART=[],REV={},STAGE="cart",RGS=[],RN=[],IMP=null,IMPC=[],CFGMSG="",TAB="db"; // CART: carrello temporaneo (solo in memoria, mai esportato)
+const cfg=()=>S.cfg;
+const isMail=e=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+const numCmp=(a,b)=>a.localeCompare(b,undefined,{numeric:true});
+
+/* ============ LETTURA EXCEL ============ */
+const needLib=()=>{if(typeof XLSX==="undefined")throw new Error("Libreria SheetJS non disponibile (connessione assente?). Per l'uso offline scarica xlsx.full.min.js e sostituisci l'URL nel tag <script> in fondo al file.")};
+function readWB(buf){needLib();return XLSX.read(buf,{type:"array",cellFormula:false,cellDates:false}) } // le formule NON vengono eseguite: si usano i valori in cache
+function hash(s){let h1=0xdeadbeef,h2=0x41c6ce57;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677)}
+ h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return(4294967296*(2097151&h2)+(h1>>>0)).toString(36)}
+function sheetRows(wb,sh){const ws=wb.Sheets[sh];if(!ws)throw new Error("Foglio non trovato");const a=XLSX.utils.sheet_to_json(ws,{defval:"",raw:true});
+ if(!a.length)throw new Error("Il foglio selezionato è vuoto");
+ const seen={}; // chiave stabile di riga (__k): hash del contenuto + progressivo tra righe identiche; non enumerabile, quindi non compare tra le colonne
+ a.forEach(r=>{const h=hash(JSON.stringify(Object.values(r))),n=seen[h]=(seen[h]||0)+1;Object.defineProperty(r,"__k",{value:h+"-"+n})});
+ return{rows:a,headers:Object.keys(a[0])}}
+function guess(headers,mappa){const out={};for(const k in FIELDS){const w=(mappa[k]||DB_CONFIG.mappa[k]||"").toLowerCase();out[k]=headers.find(h=>h.toLowerCase()===w)||""}return out}
+function applyCustom(sh){ // valida prima di sostituire; in caso di errore conserva il DB precedente
+ try{const{rows,headers}=sheetRows(PEND.wb,sh);S.cfg.mappa=guess(headers,S.cfg.mappa);
+  DB={name:PEND.name,sheet:sh,rows,headers,ok:true,loaded:new Date().toLocaleString("it-IT"),err:""};save();recompute();return true}
+ catch(e){alert("Database non applicato (resta in uso il precedente): "+e.message);return false}}
+function loadBox(p){return `<input type="file" accept=".xlsx,.xls" onchange="pickFile(this.files[0])">
+ ${PEND?`<p>File: ${esc(PEND.name)} · Foglio: <select id="shs_${p}">${PEND.wb.SheetNames.map(s=>`<option>${esc(s)}</option>`).join("")}</select> <button class="p" onclick="applyCustom($('#shs_${p}').value)">Applica</button></p>`:""}`}
+async function pickFile(f){if(!f)return;try{const wb=readWB(await f.arrayBuffer());PEND={wb,name:f.name};render();if($("#st.on"))renderSettings()}catch(e){alert("File non leggibile (database precedente conservato): "+e.message)}}
+
+/* ============ NORMALIZZAZIONE E FILTRI ============ */
+const nv=v=>v==null?"":String(v).trim();
+const isNum=s=>/^-?\d+(\.\d+)?$/.test(s);
+const eq=(a,b)=>{a=nv(a);b=nv(b);if(a.toLowerCase()===b.toLowerCase())return true;return isNum(a)&&isNum(b)&&Number(a)===Number(b)}; // "03" = 3
+const empty=v=>nv(v)==="";
+function recompute(){
+ const m=cfg().mappa,f=cfg().filtri,miss=[];
+ for(const k in FIELDS)if(FIELDS[k][1]&&!(m[k]&&DB.headers.includes(m[k])))miss.push(FIELDS[k][0]);
+ DB.missing=miss;DB.valid=[];
+ if(!miss.length){DB.valid=DB.rows.filter(r=>eq(r[m.comp],f.comp)&&empty(r[m.data])&&eq(r[m.tens],f.tens))}
+ DB.noTit=DB.valid.filter(r=>empty(r[m.tit])).length;
+ RES=null;SEL=new Set();render();if($("#st.on"))renderSettings();updCartBtn();if($("#ct.on"))renderCart()}
+const cod=r=>nv(cfg_m().tit&&r[cfg_m().tit]);const cfg_m=()=>cfg().mappa;
+
+/* ============ RICERCA E RAGGRUPPAMENTO ============ */
+function search(q,partial){q=nv(q);const m=cfg_m();if(!q||DB.missing?.length)return null;
+ const ex=[],pa=[];DB.valid.forEach(r=>{const v=nv(r[m.ricerca]);if(eq(v,q))ex.push(r);else if(partial&&v.toLowerCase().includes(q.toLowerCase()))pa.push(r)});
+ return{q,ex,pa}}
+const ownerName=c=>S.owners[c]||"";
+function group(rows,q){const m=cfg_m(),g={};
+ rows.forEach(r=>{const c=nv(r[m.tit]),n=c?ownerName(c):"",key=n?"N:"+n:"X:"+(c||"(senza codice)");
+  const o=g[key]||(g[key]={name:n||"Titolare non identificato",ident:!!n,codes:new Set(),items:[],q});o.codes.add(c||"(senza codice)");o.items.push(r)});
+ return Object.values(g).sort((a,b)=>b.ident-a.ident||a.name.localeCompare(b.name))}
+const types=items=>{const m=cfg_m(),t={};items.forEach(r=>{const k=nv(r[m.tipo])||"?";t[k]=(t[k]||0)+1});return t};
+const uniq=a=>[...new Set(a)];
+const cartHas=k=>CART.some(x=>x.key===k);
+
+/* ============ RENDER PRINCIPALE ============ */
+function setStatus(t){$("#dbs").innerHTML=esc(t)}
+function render(){
+ let h="";const m=cfg_m();
+ if(DB.err)h+=`<div class="card e">${esc(DB.err)}</div>`;
+ if(DB.ok){h+=`<div class="card"><b>${esc(DB.name)}</b> · foglio «${esc(DB.sheet)}» · ${DB.rows.length} righe lette · <b>${DB.valid.length}</b> superano i filtri <span class="m">(la ricerca opera solo su queste)</span>
+ <div class="m">Ultimo caricamento: ${esc(DB.loaded)}</div>
+ ${DB.missing.length?`<div class="e">Colonne indispensabili non configurate: ${DB.missing.map(esc).join(", ")}. Vai in Impostazioni › Configura DB.</div>`:""}
+ ${DB.noTit?`<div class="w">${DB.noTit} righe filtrate senza codice titolare.</div>`:""}</div>`}
+ else h+=`<div class="card"><b>Carica il database Excel</b><p class="m">Seleziona dal tuo computer il file .xlsx del database. Il file viene elaborato solo in questo browser: non viene inviato a nessun servizio e non viene conservato alla chiusura, quindi andrà ricaricato a ogni apertura (le configurazioni restano salvate).</p>${loadBox("m")}</div>`;
+ h+=`<div class="card"><div class="row"><input id="q" placeholder="Codice elemento (es. 670)" style="flex:1;min-width:180px" onkeydown="if(event.key==='Enter')doSearch()"><label><input type="checkbox" id="part" ${window._part?"checked":""}> mostra anche parziali</label><button class="p" onclick="doSearch()" ${DB.ok&&!DB.missing?.length?"":"disabled"}>Cerca</button></div></div><div id="res"></div>`;
+ $("#main").innerHTML=h;if(window._q)$("#q").value=window._q;
+ setStatus(DB.ok?DB.name+" · "+DB.valid.length+" elementi validi":"Nessun database caricato");renderRes()}
+function doSearch(){
+ if(!DB.ok||DB.missing?.length)return;
+ if(SEL.size&&!confirm(`Hai ${SEL.size} elementi selezionati non ancora aggiunti al carrello: una nuova ricerca scarta la selezione. Continuare?`))return;
+ window._q=$("#q").value;window._part=$("#part").checked;window._am="";RES=search(window._q,window._part);SEL=new Set();renderRes()}
+function renderRes(){
+ const el=$("#res");if(!el)return;if(!RES){el.innerHTML="";return}
+ const{ex,pa,q}=RES;let h=`<div class="card big"><b>${ex.length}</b> corrispondenze esatte per «${esc(q)}»${pa.length?` · <span class="w">${pa.length} parziali</span>`:""}</div>`;
+ if(!ex.length&&!pa.length)h+=`<div class="card m">Nessun elemento trovato tra le righe che superano i filtri.</div>`;
+ RES.g={};RES.by={};
+ const mk=(rows,tag)=>group(rows,q).forEach((g,i)=>{g._id=tag+i;RES.g[g._id]=g;g.items.forEach(r=>{RES.by[r.__k]=g._id})});
+ mk(ex,"e");mk(pa,"p");
+ const drawG=(g,tag)=>{const m=cfg_m(),id=g._id,tt=types(g.items);
+  return `<div class="card grp ${g.ident?"":"dis"}"><div class="row"><input type="checkbox" id="gc_${id}" title="Seleziona/deseleziona tutti gli elementi del titolare" onchange="selGroup('${id}',this.checked)">
+  <b class="big">${esc(g.name)}</b> <span class="tag">cod. ${[...g.codes].map(esc).join(", ")}</span><span class="tag">${g.items.length} elementi trovati</span>${Object.entries(tt).map(([k,v])=>`<span class="tag">${esc(k)}: ${v}</span>`).join("")}${tag==="p"?'<span class="tag w">parziale</span>':""}</div>
+  ${g.ident?"":`<div class="w">Titolare non identificato: puoi aggiungere gli elementi al carrello, ma non potrai generare le e-mail finché non associ il codice in Impostazioni › Associa codici titolare.</div>`}
+  ${g.codes.size>1&&g.ident?`<div class="m">Più codici associati a questo nome: verifica nelle impostazioni.</div>`:""}
+  <table class="items">${g.items.map(r=>{const k=r.__k,inc=cartHas(k);return `<tr><td class="k"><input type="checkbox" data-k="${k}" ${inc?"disabled":""} onchange="selItem('${k}',this.checked)"></td><td>${esc(r[m.ricerca])}</td><td>${esc(r[m.nome])}</td><td>${esc(r[m.tipo])}</td><td>${inc?'<span class="tag ok">già nel carrello</span>':""}</td></tr>`}).join("")}</table></div>`};
+ const gs=Object.values(RES.g);
+ h+=gs.filter(g=>g._id[0]==="e").map(g=>drawG(g,"e")).join("");
+ if(pa.length)h+=`<h3>Corrispondenze parziali</h3>`+gs.filter(g=>g._id[0]==="p").map(g=>drawG(g,"p")).join("");
+ if(gs.length)h+=`<div class="bar"><span id="selinfo"></span><button class="p" id="addc" onclick="addToCart()">Aggiungi al carrello</button><button onclick="openCart()">Apri carrello (<span class="cn">${CART.length}</span>)</button><span class="m">${esc(window._am||"")}</span></div>`;
+ el.innerHTML=h;updSel()}
+function selItem(k,on){on?SEL.add(k):SEL.delete(k);updSel()}
+function selGroup(id,on){const g=RES.g[id];g.items.forEach(r=>{if(cartHas(r.__k))return;on?SEL.add(r.__k):SEL.delete(r.__k)});updSel()}
+function updSel(){if(!RES||!RES.g)return;
+ document.querySelectorAll("#res input[data-k]").forEach(i=>{i.checked=SEL.has(i.dataset.k)});
+ Object.values(RES.g).forEach(g=>{const el=document.getElementById("gc_"+g._id);if(!el)return;const av=g.items.filter(r=>!cartHas(r.__k)),n=av.filter(r=>SEL.has(r.__k)).length;
+  el.disabled=!av.length;el.checked=av.length>0&&n===av.length;el.indeterminate=n>0&&n<av.length});
+ const s=$("#selinfo");if(s)s.textContent=SEL.size?SEL.size+" elementi selezionati":"Nessun elemento selezionato";const b=$("#addc");if(b)b.disabled=!SEL.size}
+
+/* ============ CARRELLO ============ */
+function addToCart(){if(!RES||!SEL.size)return;const m=cfg_m();let add=0,dup=0;
+ Object.values(RES.g).forEach(g=>g.items.forEach(r=>{const k=r.__k;if(!SEL.has(k))return;if(cartHas(k)){dup++;return}
+  CART.push({key:k,code:nv(r[m.tit]),q:RES.q,ricerca:nv(r[m.ricerca]),nome:nv(r[m.nome]),tipo:nv(r[m.tipo]),raw:{...r}});add++}));
+ SEL=new Set();window._am=`${add} elementi aggiunti al carrello`+(dup?` (${dup} già presenti, non duplicati)`:"")+". Puoi continuare a cercare.";
+ renderRes();updCartBtn();if($("#ct.on"))renderCart()}
+function updCartBtn(){const b=$("#cb");if(b)b.textContent=`Carrello (${CART.length})`;document.querySelectorAll(".cn").forEach(e=>e.textContent=CART.length)}
+function cartGroups(){const g={};
+ CART.forEach(it=>{const n=it.code?ownerName(it.code):"",key=n?"N:"+n:"X:"+(it.code||"(senza codice)");
+  const o=g[key]||(g[key]={name:n||"Titolare non identificato",ident:!!n,codes:new Set(),items:[]});o.codes.add(it.code||"(senza codice)");o.items.push(it)});
+ return Object.values(g).sort((a,b)=>b.ident-a.ident||a.name.localeCompare(b.name))}
+function openCart(){STAGE="cart";$("#ct").classList.add("on");renderCart()}
+function closeCart(){$("#ct").classList.remove("on")}
+function goOwners(){closeCart();openSettings("own")}
+function toReview(){if(!CART.length)return;STAGE="review";renderCart()}
+function rmCart(k){CART=CART.filter(x=>x.key!==k);if(!CART.length)STAGE="cart";renderCart();renderRes();updCartBtn()}
+function clearCart(){if(!CART.length)return;if(!confirm(`Svuotare il carrello (${CART.length} elementi)?`))return;CART=[];REV={};STAGE="cart";renderCart();renderRes();updCartBtn()}
+function showDet(k){const it=CART.find(x=>x.key===k);if(!it)return;
+ $("#dtb").innerHTML=`<div class="row" style="justify-content:space-between"><h2 style="margin:0">Dettagli elemento</h2><button onclick="$('#dt').classList.remove('on')">Chiudi</button></div><table>${Object.entries(it.raw).map(([a,b])=>`<tr><th>${esc(a)}</th><td>${esc(b)}</td></tr>`).join("")}</table>`;$("#dt").classList.add("on")}
+function renderCart(){const el=$("#ctb");if(!el)return;
+ if(STAGE==="review"&&CART.length){renderReview();return}STAGE="cart";
+ let h=`<div class="row" style="justify-content:space-between"><h2 style="margin:0">Carrello</h2><button onclick="closeCart()">Torna alla ricerca</button></div>`;
+ if(!CART.length){el.innerHTML=h+`<p class="m">Il carrello è vuoto. Cerca un codice, seleziona gli elementi e premi «Aggiungi al carrello».</p>`;return}
+ const gs=cartGroups(),un=gs.filter(g=>!g.ident);
+ h+=`<p class="big"><b>${CART.length}</b> elementi · <b>${gs.length}</b> titolari coinvolti</p>`;
+ if(un.length)h+=`<div class="card w">⚠ Il carrello contiene elementi di titolari non identificati (codici: ${un.map(g=>[...g.codes].map(esc).join(", ")).join("; ")}). Non è possibile generare le e-mail finché non completi l'associazione del codice titolare nelle impostazioni, oppure rimuovi quegli elementi. <button onclick="goOwners()">Associa codici titolare</button></div>`;
+ gs.forEach(g=>{h+=`<div class="card grp ${g.ident?"":"dis"}"><div class="row"><b class="big">${esc(g.name)}</b> <span class="tag">cod. ${[...g.codes].map(esc).join(", ")}</span><span class="tag">${g.items.length} elementi</span></div>
+ <table><tr><th>Elemento (NOME_ELEMENTO)</th><th>Codice di ricerca</th><th>Tipologia</th><th></th></tr>${g.items.map(it=>`<tr><td>${it.nome?esc(it.nome):'<span class="w">(senza nome)</span>'}</td><td>${esc(it.ricerca)}</td><td>${esc(it.tipo)}</td><td><button onclick="showDet('${it.key}')">Dettagli</button> <button onclick="rmCart('${it.key}')">Rimuovi</button></td></tr>`).join("")}</table></div>`});
+ h+=`<div class="row"><button class="p" onclick="toReview()" ${un.length?"disabled":""}>Conferma e controlla il riepilogo</button><button onclick="clearCart()">Svuota carrello</button><button onclick="closeCart()">Torna alla ricerca</button></div><div class="m">Nessuna e-mail viene generata né inviata finché non confermi. Il carrello è temporaneo e non viene salvato né esportato.</div>`;
+ el.innerHTML=h}
+
+/* ============ DESTINATARI DELLE BOZZE ============ */
+const mlOK=()=>!!(S.ml.on&&S.ml.email&&isMail(S.ml.email));
+const mlFlags=v=>({a:v==="A"||v==="A+CC",c:v==="CC"||v==="A+CC"});
+const mlStr=(a,c)=>a&&c?"A+CC":a?"A":c?"CC":"NESSUNO";
+const mlFor=n=>mlFlags(S.mlSel[n]!==undefined?S.mlSel[n]:S.ml.def); // scelta del titolare, altrimenti predefinito globale
+function recipFor(name){const cts=S.contacts[name]||[];let rv=REV[name];
+ if(!rv||rv.c.length!==cts.length)rv=REV[name]={c:cts.map(c=>({a:c.def==="A",c:c.def==="CC"}))};return rv}
+function lists(name){const cts=S.contacts[name]||[],rv=recipFor(name),A=[],C=[];
+ cts.forEach((c,i)=>{if(rv.c[i].a)A.push(c.email);if(rv.c[i].c)C.push(c.email)});
+ if(mlOK()){const f=mlFor(name);if(f.a)A.push(S.ml.email);if(f.c)C.push(S.ml.email)}
+ const dd=l=>{const s=new Set(),o=[];l.forEach(e=>{const k=e.toLowerCase();if(!s.has(k)){s.add(k);o.push(e)}});return o};
+ const a=dd(A),c=dd(C),ov=a.filter(e=>c.some(x=>x.toLowerCase()===e.toLowerCase()));return{a,c,ov}}
+function renderReview(){const el=$("#ctb"),gs=cartGroups();RGS=gs;let blocked=false;
+ let h=`<div class="row" style="justify-content:space-between"><h2 style="margin:0">Riepilogo prima della generazione</h2><button onclick="closeCart()">Annulla (nessuna e-mail)</button></div>
+ <p class="big"><b>${gs.length}</b> titolari coinvolti · <b>${CART.length}</b> elementi selezionati · ${gs.length} bozze da generare</p>
+ <div class="card"><div class="row"><label>Linea fuori servizio <input id="lin" value="${esc(S.linea)}" size="40" onchange="S.linea=this.value;save()"></label><label>Periodo lavori <input id="per" value="${esc(S.periodo)}" size="28" placeholder="obbligatorio" onchange="S.periodo=this.value;save()"></label></div></div>`;
+ gs.forEach((g,gi)=>{
+  if(!g.ident){blocked=true;h+=`<div class="card e">Titolare non identificato (cod. ${[...g.codes].map(esc).join(", ")}): associa il codice nelle impostazioni o rimuovi gli elementi dal carrello.</div>`;return}
+  const els=uniq(g.items.map(i=>i.nome).filter(Boolean)),cts=S.contacts[g.name]||[],rv=recipFor(g.name),L=lists(g.name),f=mlFor(g.name);if(!els.length)blocked=true;
+  h+=`<div class="card"><div class="row"><b class="big">${esc(g.name)}</b> <span class="tag">cod. ${[...g.codes].map(esc).join(", ")}</span><span class="tag">${els.length} elementi nell'e-mail</span></div>
+  ${els.length?"":'<div class="e">Nessun NOME_ELEMENTO disponibile: la bozza non può essere generata.</div>'}
+  <div class="m">Elementi che verranno inseriti nell'e-mail:</div><ul>${els.map(e=>`<li>${esc(e)}</li>`).join("")}</ul>
+  ${g.items.length>els.length?`<div class="m">${g.items.length} elementi nel carrello: quelli con lo stesso NOME_ELEMENTO compaiono una sola volta; quelli senza nome non vengono inseriti.</div>`:""}
+  <table><tr><th>Destinatario</th><th>A</th><th>CC</th></tr>${cts.map((c,i)=>`<tr><td>${esc(c.name||"")} ${esc(c.email)}</td><td><input type="checkbox" ${rv.c[i].a?"checked":""} onchange="rvC(${gi},${i},'a',this.checked)"></td><td><input type="checkbox" ${rv.c[i].c?"checked":""} onchange="rvC(${gi},${i},'c',this.checked)"></td></tr>`).join("")}
+  ${mlOK()?`<tr><td><b>${esc(S.ml.name||"Mailing list ufficio")}</b> ${esc(S.ml.email)} <span class="tag">globale</span></td><td><input type="checkbox" ${f.a?"checked":""} onchange="rvM(${gi},'a',this.checked)"></td><td><input type="checkbox" ${f.c?"checked":""} onchange="rvM(${gi},'c',this.checked)"></td></tr>`:""}</table>
+  ${cts.length||mlOK()?"":'<div class="w">Nessun destinatario configurato (Impostazioni › Destinatari). Potrai inserirli a mano nell\'anteprima.</div>'}
+  <div class="m">A: ${L.a.length?esc(L.a.join(", ")):"—"}<br>CC: ${L.c.length?esc(L.c.join(", ")):"—"}</div>
+  ${!L.a.length?'<div class="w">Nessun destinatario in A.</div>':""}
+  ${L.ov.length?`<div class="w">⚠ Presenti sia in A sia in CC: ${esc(L.ov.join(", "))}. Deseleziona una delle due caselle.</div>`:""}</div>`});
+ h+=`<div class="row"><button onclick="STAGE='cart';renderCart()">← Torna al carrello</button><button class="p" onclick="makeDrafts()" ${blocked?"disabled":""}>Genera bozze</button></div><div class="m">Le bozze si aprono nel client di posta solo dopo il tuo click su «Apri bozza in Outlook»: nulla viene inviato automaticamente.</div>`;
+ el.innerHTML=h}
+function rvC(gi,ci,k,v){recipFor(RGS[gi].name).c[ci][k]=v;renderReview()}
+function rvM(gi,k,v){const n=RGS[gi].name,f=mlFor(n);f[k]=v;S.mlSel[n]=mlStr(f.a,f.c);save();renderReview()}
+
+/* ============ MODELLO E BOZZE ============ */
+function fill(t,v){return t.replace(/\{\{(\w+)\}\}/g,(x,k)=>k in v?v[k]:x)}
+function makeDrafts(){
+ if(!nv(S.periodo)){alert("Inserisci il periodo dei lavori prima di generare le bozze.");const p=$("#per");if(p)p.focus();return}
+ if(!nv(S.linea)){alert("Inserisci la linea fuori servizio.");return}
+ if(!CART.length){alert("Il carrello è vuoto.");return}
+ const gs=cartGroups();
+ if(gs.some(g=>!g.ident)){alert("Il carrello contiene elementi di titolari non identificati: associa i codici nelle impostazioni o rimuovili dal carrello.");return}
+ const out=[];
+ for(const g of gs){const els=uniq(g.items.map(i=>i.nome).filter(Boolean));
+  if(!els.length){alert("Nessun NOME_ELEMENTO disponibile per "+g.name+": non genero bozze vuote.");return}
+  const L=lists(g.name);
+  const v={TITOLARE:g.name,CODICE_TITOLARE:[...g.codes].join(", "),CODICE_RICERCA:uniq(g.items.map(i=>i.q)).join(", "),ELENCO_ELEMENTI:els.map(e=>"- "+e+";").join("\n"),LINEA_FUORI_SERVIZIO:S.linea,PERIODO_LAVORI:S.periodo};
+  out.push({titolare:g.name,to:L.a.join(", "),cc:L.c.join(", "),subject:fill(S.tpl.subject,v),body:fill(S.tpl.body,v),n:els.length})}
+ DRAFTS=out;renderPrev();$("#pv").classList.add("on")}
+const listOf=s=>{const seen=new Set(),o=[];String(s||"").split(/[;,]/).map(x=>x.trim()).filter(Boolean).forEach(e=>{const k=e.toLowerCase();if(!seen.has(k)){seen.add(k);o.push(e)}});return o};
+const ovl=d=>{const c=listOf(d.cc).map(x=>x.toLowerCase());return listOf(d.to).filter(e=>c.includes(e.toLowerCase()))};
+const ovHtml=d=>{const o=ovl(d);return o.length?`⚠ Presenti sia in A sia in CC: ${esc(o.join(", "))}. Correggi i campi se non è voluto.`:""};
+function updOv(i){const e=document.getElementById("ov"+i);if(e)e.innerHTML=ovHtml(DRAFTS[i])}
+function renderPrev(){
+ $("#pvb").innerHTML=`<h2>Anteprima bozze (${DRAFTS.length})</h2><div class="m">Le modifiche valgono solo per la singola bozza e non alterano il modello salvato.</div>`+DRAFTS.map((d,i)=>`<div class="card"><b>${esc(d.titolare)}</b> <span class="tag">${d.n} elementi</span>
+ ${d.to?"":'<div class="w">Nessun destinatario in A.</div>'}<div class="w" id="ov${i}">${ovHtml(d)}</div>
+ <p>A: <input style="width:100%" value="${esc(d.to)}" onchange="DRAFTS[${i}].to=this.value;updOv(${i})"></p><p>CC: <input style="width:100%" value="${esc(d.cc)}" onchange="DRAFTS[${i}].cc=this.value;updOv(${i})"></p>
+ <p>Oggetto: <input style="width:100%" value="${esc(d.subject)}" onchange="DRAFTS[${i}].subject=this.value"></p><textarea onchange="DRAFTS[${i}].body=this.value">${esc(d.body)}</textarea>
+ <div class="row"><button class="p" onclick="openMail(${i})">Apri bozza in Outlook</button><button onclick="copyMail(${i})">Copia e-mail</button></div><div class="m" id="msg${i}"></div></div>`).join("")+`<button onclick="$('#pv').classList.remove('on')">Chiudi</button>`}
+function mailUrl(d){const nl=t=>encodeURIComponent(t.replace(/\r?\n/g,"\r\n")),to=listOf(d.to),cc=listOf(d.cc);
+ return "mailto:"+to.map(encodeURIComponent).join(",")+"?subject="+nl(d.subject)+(cc.length?"&cc="+cc.map(encodeURIComponent).join(","):"")+"&body="+nl(d.body)}
+function openMail(i){const d=DRAFTS[i],u=mailUrl(d);
+ const w=u.length>1900?" Attenzione: contenuto molto lungo, il client potrebbe troncarlo; usa «Copia e-mail» per sicurezza.":"";
+ location.href=u;$("#msg"+i).innerHTML="Richiesta di apertura inviata al client di posta (il browser non può confermare che la bozza sia stata aperta)."+w}
+async function copyMail(i){const d=DRAFTS[i],t=`A: ${d.to}\nCC: ${d.cc}\nOggetto: ${d.subject}\n\n${d.body}`;
+ try{await navigator.clipboard.writeText(t);$("#msg"+i).textContent="Copiato negli appunti."}
+ catch(e){$("#msg"+i).innerHTML='Copia automatica non disponibile: seleziona e copia il testo qui sotto.<textarea style="min-height:120px" readonly onfocus="this.select()">'+esc(t)+"</textarea>"}}
+
+/* ============ IMPOSTAZIONI ============ */
+function openSettings(t){TAB=t||TAB;REV={};$("#st").classList.add("on");renderSettings()}
+function renderSettings(){
+ const T={db:"Database",cols:"Configura DB",own:"Associa codici titolare",rec:"Destinatari e-mail",tpl:"Modello e-mail"};
+ let h=`<div class="row" style="justify-content:space-between"><h2 style="margin:0">Impostazioni</h2><div class="row"><button onclick="exportCfg()">Esporta configurazione</button><button onclick="document.getElementById('impf').click()">Importa configurazione</button><button onclick="$('#st').classList.remove('on');render()">Chiudi</button></div></div>${CFGMSG?`<div class="card" style="margin-top:8px">${CFGMSG}</div>`:""}<div class="tabs">${Object.entries(T).map(([k,v])=>`<button class="${k===TAB?"on":""}" onclick="TAB='${k}';renderSettings()">${v}</button>`).join("")}</div>`;
+ h+=({db:tDb,cols:tCols,own:tOwn,rec:tRec,tpl:tTpl})[TAB]();$("#stb").innerHTML=h}
+function tDb(){return `<p>In uso: <b>${esc(DB.name||"—")}</b>${DB.ok?` · foglio «${esc(DB.sheet)}»`:""}</p>
+ <h3>Carica o sostituisci il database</h3><p class="m">Il database viene letto solo da un file del tuo computer ed elaborato localmente nel browser: non viene inviato a nessun servizio e non viene conservato alla chiusura, quindi andrà ricaricato alla riapertura (le configurazioni restano salvate).</p>${loadBox("s")}`}
+function tCols(){if(!DB.ok)return "<p>Carica prima un database.</p>";const c=cfg(),m=c.mappa;
+ return `<table><tr><th>Campo</th><th>Colonna</th><th>Anteprima</th><th>Stato</th></tr>${Object.entries(FIELDS).map(([k,[l,req]])=>{const col=m[k],ok=col&&DB.headers.includes(col),pv=ok?uniq(DB.rows.slice(0,200).map(r=>nv(r[col])).filter(Boolean)).slice(0,3).join(" | "):"";
+ return `<tr><td>${l}${req?" *":""}</td><td><select onchange="cfg().mappa['${k}']=this.value;save();recompute()"><option value="">— nessuna —</option>${DB.headers.map(h=>`<option ${h===col?"selected":""}>${esc(h)}</option>`).join("")}</select></td><td class="m">${esc(pv)}</td><td class="${ok?"ok":req?"e":"w"}">${ok?"OK":req?"Mancante (indispensabile)":"Mancante"}</td></tr>`}).join("")}</table>
+ <h3>Filtri</h3><div class="row"><label>Codice competente = <input value="${esc(c.filtri.comp)}" size="6" onchange="cfg().filtri.comp=this.value;save();recompute()"></label><label>Livello tensione = <input value="${esc(c.filtri.tens)}" size="6" onchange="cfg().filtri.tens=this.value;save();recompute()"></label><span>Data fine validità: <b>vuota</b></span></div>
+ <p class="m">Righe che superano i filtri: ${DB.valid.length} su ${DB.rows.length}.</p>`}
+function ownerInfo(){const m=cfg_m(),o={};DB.valid.forEach(r=>{const c=nv(r[m.tit]);if(!c)return;const e=o[c]||(o[c]={c,n:0,rs:{},ex:[],ty:{}});e.n++;const rs=nv(r[m.rs]);if(rs)e.rs[rs]=(e.rs[rs]||0)+1;const nm=nv(r[m.nome]);if(nm&&e.ex.length<3&&!e.ex.includes(nm))e.ex.push(nm);const t=nv(r[m.tipo]);if(t)e.ty[t]=1});return o}
+function tOwn(){if(!DB.ok||DB.missing.length)return "<p>Configura prima il database.</p>";const o=ownerInfo(),cs=Object.keys(o).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+ const inRes=RES?new Set([...RES.ex,...RES.pa].map(r=>nv(r[cfg_m().tit]))):new Set(),f=(window._of||"").toLowerCase();
+ const nA=cs.filter(c=>S.owners[c]).length,gone=Object.keys(S.owners).filter(c=>!o[c]);
+ return `<p><b>${cs.length}</b> codici distinti · <b>${[...inRes].filter(c=>c).length}</b> nella ricerca corrente · <b>${nA}</b> associati · <b>${cs.length-nA}</b> da associare · <b>${DB.noTit}</b> righe senza codice</p>
+ ${gone.length?`<p class="w">Associazioni di codici non presenti in questo database: ${gone.map(esc).join(", ")}</p>`:""}
+ <input placeholder="Cerca codice o nome…" value="${esc(window._of||"")}" onchange="window._of=this.value;renderSettings()">
+ <table><tr><th>Codice</th><th>RAGSOC nel DB</th><th>Elementi</th><th>Titolare</th><th></th></tr>${cs.filter(c=>!f||c.toLowerCase().includes(f)||(S.owners[c]||"").toLowerCase().includes(f)).map(c=>{const e=o[c],rs=Object.entries(e.rs).sort((a,b)=>b[1]-a[1]),disc=rs.length>1;
+  const prop=!S.owners[c]&&rs.length===1?rs[0][0]:"";
+  return `<tr><td>${esc(c)}</td><td>${rs.length?rs.map(([k,v])=>`${esc(k)} (${v})`).join("<br>"):'<span class="m">—</span>'}${disc?'<div class="w">Valori discordanti: scegli tu.</div>':""}</td>
+  <td>${e.n} ${Object.keys(e.ty).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}<div class="m">${e.ex.map(esc).join("; ")}</div></td>
+  <td><input id="o_${esc(c)}" value="${esc(S.owners[c]||prop)}" placeholder="${prop?"proposta":""}"></td><td><button onclick="setOwner('${esc(c)}')">${prop?"Conferma":"Salva"}</button> ${S.owners[c]?`<button onclick="delete S.owners['${esc(c)}'];save();recompute();renderSettings()">Elimina</button>`:""}</td></tr>`}).join("")}</table>`}
+function setOwner(c){const v=nv(document.getElementById("o_"+c).value);if(v)S.owners[c]=v;else delete S.owners[c];save();const r=RES;recompute();RES=r;renderSettings()}
+
+/* --- Destinatari: mailing list globale + contatti per titolare --- */
+const DLAB=v=>v==="A"?"A":v==="CC"?"CC":"nessuno";
+function tRec(){const names=uniq(Object.values(S.owners)).sort();RN=names;
+ let h=`<div class="card"><b>Mailing list dell'ufficio</b> <span class="m">(contatto globale, aggiungibile alle bozze di qualsiasi titolare)</span>
+ <div class="row" style="margin-top:8px"><input value="${esc(S.ml.name)}" placeholder="Nome descrittivo" onchange="setML('name',this.value)"><input value="${esc(S.ml.email)}" placeholder="Indirizzo e-mail (da inserire)" size="32" onchange="setML('email',this.value)"><label><input type="checkbox" ${S.ml.on?"checked":""} onchange="setML('on',this.checked)"> Attiva</label>
+ <label>Campo predefinito <select onchange="setML('def',this.value)">${[["","Non selezionato"],["A","A"],["CC","CC"]].map(([v,l])=>`<option value="${v}" ${S.ml.def===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
+ ${S.ml.on&&!S.ml.email?'<div class="w">Indirizzo non ancora inserito: la mailing list non verrà aggiunta a nessuna bozza.</div>':""}
+ <div class="m">Per ogni titolare puoi scegliere se includerla in A, in CC, in entrambi o non includerla (vedi qui sotto o nel riepilogo del carrello).</div></div>`;
+ if(!names.length)return h+"<p>Associa prima almeno un codice a un titolare.</p>";
+ return h+names.map((n,k)=>{const l=S.contacts[n]||[],sv=S.mlSel[n];return `<div class="card"><b>${esc(n)}</b><table>${l.length?`<tr><th>Nome</th><th>E-mail</th><th>Predefinito</th><th></th></tr>`:""}${l.map((c,i)=>`<tr><td>${esc(c.name||"")}</td><td>${esc(c.email)}</td>
+ <td><select onchange="setDef(${k},${i},this.value)">${[["","—"],["A","A"],["CC","CC"]].map(([v,t])=>`<option value="${v}" ${(c.def||"")===v?"selected":""}>${t}</option>`).join("")}</select></td><td><button onclick="delC(${k},${i})">Elimina</button></td></tr>`).join("")}</table>
+ <div class="row"><input id="cn_${k}" placeholder="Nome (facoltativo)"><input id="ce_${k}" placeholder="E-mail"><select id="cd_${k}"><option value="">Predefinito: —</option><option value="A">Predefinito: A</option><option value="CC">Predefinito: CC</option></select><button onclick="addC(${k})">Aggiungi</button></div>${l.length?"":'<div class="w">Nessun destinatario configurato.</div>'}
+ ${mlOK()?`<div class="row" style="margin-top:6px"><label>Mailing list ufficio per questo titolare <select onchange="setMlSel(${k},this.value)"><option value="" ${sv===undefined?"selected":""}>Predefinito globale (${DLAB(S.ml.def)})</option>${[["A","In A"],["CC","In CC"],["A+CC","In A e in CC"],["NESSUNO","Non includerla"]].map(([v,t])=>`<option value="${v}" ${sv===v?"selected":""}>${t}</option>`).join("")}</select></label></div>`:""}</div>`}).join("")}
+function setML(f,v){if(f==="email"){v=nv(v);if(v&&!isMail(v)){alert("Indirizzo e-mail non valido");renderSettings();return}S.ml.email=v}
+ else if(f==="name")S.ml.name=nv(v);else if(f==="on")S.ml.on=!!v;else if(f==="def")S.ml.def=["A","CC"].includes(v)?v:"";save();renderSettings()}
+function setMlSel(k,v){const n=RN[k];if(v==="")delete S.mlSel[n];else S.mlSel[n]=v;save();renderSettings()}
+function setDef(k,i,v){S.contacts[RN[k]][i].def=["A","CC"].includes(v)?v:"";save();renderSettings()}
+function delC(k,i){S.contacts[RN[k]].splice(i,1);save();renderSettings()}
+function addC(k){const n=RN[k],e=nv(document.getElementById("ce_"+k).value);if(!isMail(e)){alert("Indirizzo e-mail non valido");return}
+ const l=S.contacts[n]=S.contacts[n]||[];if(l.some(c=>c.email.toLowerCase()===e.toLowerCase())){alert("Questo indirizzo è già presente per il titolare");return}
+ l.push({name:nv(document.getElementById("cn_"+k).value),email:e,def:document.getElementById("cd_"+k).value});save();renderSettings()}
+function tTpl(){return `<p>Oggetto</p><input style="width:100%" value="${esc(S.tpl.subject)}" onchange="S.tpl.subject=this.value;save()"><p>Corpo</p><textarea onchange="S.tpl.body=this.value;save()">${esc(S.tpl.body)}</textarea>
+ <div class="row"><button onclick="if(confirm('Ripristinare il modello predefinito?')){S.tpl={...TPL0};save();renderSettings()}">Ripristina modello predefinito</button></div>
+ <h3>Segnaposto</h3><table>${Object.entries(PH).map(([k,v])=>`<tr><td><code>{{${k}}}</code></td><td>${v}</td></tr>`).join("")}</table>`}
+
+/* ============ ESPORTAZIONE / IMPORTAZIONE CONFIGURAZIONE ============ */
+/* Contiene: associazioni codice→ragione sociale, contatti per titolare (nome, e-mail, A/CC predefinito), scelta della mailing list per titolare, mailing list globale.
+   NON contiene: database, righe, risultati di ricerca, carrello, password/token (non esistono nell'applicazione). */
+const DEFS=["","A","CC"],MLS=["A","CC","A+CC","NESSUNO"];
+const lc=s=>String(s).toLowerCase(),clone=x=>JSON.parse(JSON.stringify(x));
+const findName=(o,n)=>Object.keys(o).find(k=>lc(k)===lc(n));
+const codesOf=n=>Object.keys(S.owners).filter(c=>S.owners[c]===n).sort(numCmp);
+function buildExport(){
+ const associazioni=Object.keys(S.owners).sort(numCmp).map(c=>({codice:c,ragioneSociale:S.owners[c]}));
+ const nm=uniq([...Object.keys(S.contacts),...Object.keys(S.mlSel)]).sort();
+ const destinatari=nm.filter(n=>(S.contacts[n]||[]).length||S.mlSel[n]!==undefined).map(n=>({ragioneSociale:n,codici:codesOf(n),
+  contatti:(S.contacts[n]||[]).map(c=>({nome:c.name||"",email:c.email,predefinito:c.def||""})),mailingListUfficio:S.mlSel[n]!==undefined?S.mlSel[n]:null}));
+ return{formato:CFG_FMT,versione:CFG_VER,esportatoIl:new Date().toISOString(),associazioni,destinatari,
+  mailingListUfficio:{attiva:!!S.ml.on,nome:S.ml.name||"",email:S.ml.email||"",predefinito:S.ml.def||""}}}
+function cfgMsg(h){CFGMSG=h;if($("#st.on"))renderSettings()}
+function exportCfg(){try{const o=buildExport();
+ const blob=new Blob([JSON.stringify(o,null,2)],{type:"application/json"}),a=document.createElement("a");
+ a.href=URL.createObjectURL(blob);a.download="configurazione_piena_efficienza.json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+ cfgMsg(`<span class="ok">Configurazione esportata in «configurazione_piena_efficienza.json»: ${o.associazioni.length} associazioni, ${o.destinatari.reduce((n,d)=>n+d.contatti.length,0)} contatti, mailing list ufficio ${o.mailingListUfficio.email?"inclusa":"non configurata"}.</span>`)}
+ catch(e){alert("Esportazione non riuscita: "+e.message)}}
+function parseCfg(o){const err=[],warn=[];
+ if(!o||typeof o!=="object"||Array.isArray(o))return{err:["Il file non contiene un oggetto di configurazione."]};
+ if(o.formato!==CFG_FMT)return{err:["Formato non riconosciuto: il file non è una configurazione esportata da questa applicazione."]};
+ if(!Number.isInteger(o.versione)||o.versione<1)return{err:["Versione del formato mancante o non valida."]};
+ if(o.versione>CFG_VER)return{err:[`Il file usa la versione ${o.versione} del formato, più recente di quella supportata (${CFG_VER}): aggiorna l'applicazione.`]};
+ if(!["associazioni","destinatari","mailingListUfficio"].some(k=>k in o))return{err:["Nessuna sezione di configurazione riconosciuta nel file."]};
+ const assoc={},contacts={},mlSel={};let ml=null;
+ if("associazioni" in o){if(!Array.isArray(o.associazioni))err.push("La sezione «associazioni» non è un elenco valido.");
+  else o.associazioni.forEach((a,i)=>{const c=nv(a&&a.codice),n=nv(a&&a.ragioneSociale);
+   if(!c||!n){warn.push(`Associazione n. ${i+1} incompleta: ignorata.`);return}
+   if(assoc[c]!==undefined&&assoc[c]!==n){err.push(`Il codice ${c} compare con ragioni sociali diverse nel file («${assoc[c]}» e «${n}»).`);return}assoc[c]=n})}
+ if("destinatari" in o){if(!Array.isArray(o.destinatari))err.push("La sezione «destinatari» non è un elenco valido.");
+  else o.destinatari.forEach((d,i)=>{const n0=nv(d&&d.ragioneSociale);if(!n0){warn.push(`Destinatari n. ${i+1}: ragione sociale mancante, voce ignorata.`);return}
+   const n=findName(contacts,n0)||findName(mlSel,n0)||n0;
+   if(d.contatti!=null){if(!Array.isArray(d.contatti))warn.push(`${n}: elenco contatti non valido, ignorato.`);
+    else d.contatti.forEach((c,j)=>{const em=nv(c&&c.email);if(!isMail(em)){warn.push(`${n}: contatto n. ${j+1} con e-mail mancante o non valida${em?" ("+em+")":""}: ignorato.`);return}
+     let def=nv(c.predefinito).toUpperCase();if(!DEFS.includes(def)){warn.push(`${n}: valore A/CC non riconosciuto per ${em}: ignorato.`);def=""}
+     const l=contacts[n]=contacts[n]||[],ex=l.find(x=>lc(x.email)===lc(em));
+     if(ex){if(ex.def!==def||(nv(c.nome)&&ex.name&&ex.name!==nv(c.nome)))warn.push(`${n}: ${em} compare più volte con valori diversi: mantenuto il primo.`);return}
+     l.push({name:nv(c.nome),email:em,def})})}
+   if(d.mailingListUfficio!=null){const v=nv(d.mailingListUfficio).toUpperCase();if(MLS.includes(v))mlSel[n]=v;else warn.push(`${n}: scelta mailing list non riconosciuta: ignorata.`)}})}
+ if("mailingListUfficio" in o&&o.mailingListUfficio!=null){const m=o.mailingListUfficio;
+  if(typeof m!=="object"||Array.isArray(m))warn.push("Sezione mailing list dell'ufficio non valida: ignorata.");
+  else{const em=nv(m.email);if(em&&!isMail(em))warn.push(`Mailing list dell'ufficio: indirizzo non valido (${em}): sezione ignorata.`);
+   else{let def=nv(m.predefinito).toUpperCase();if(!DEFS.includes(def)){warn.push("Mailing list dell'ufficio: campo predefinito non riconosciuto: ignorato.");def=""}
+    ml={on:typeof m.attiva==="boolean"?m.attiva:true,name:nv(m.nome),email:em,def}}}}
+ if(err.length)return{err};
+ if(!Object.keys(assoc).length&&!Object.keys(contacts).length&&!Object.keys(mlSel).length&&!ml)return{err:["Il file non contiene dati importabili."]};
+ return{err:[],warn,D:{assoc,contacts,mlSel,ml}}}
+async function pickCfg(f){if(!f)return;
+ try{if(f.size>5e6)throw new Error("file troppo grande per essere una configurazione");const o=JSON.parse(await f.text()),p=parseCfg(o);
+  if(p.err.length){cfgMsg(`<div class="e"><b>Importazione non eseguita</b> (${esc(f.name)}): ${p.err.map(esc).join(" ")} La configurazione corrente non è stata modificata.</div>`);return}
+  IMP={D:p.D,warn:p.warn,name:f.name,ver:o.versione,mode:"merge",res:{}};$("#im").classList.add("on");renderImp()}
+ catch(e){cfgMsg(`<div class="e"><b>Importazione non eseguita</b>: file non valido o non leggibile (${esc(e.message)}). La configurazione corrente non è stata modificata.</div>`)}}
+const fmtML=m=>`${m.name||"(senza nome)"} <${m.email}> · ${m.on?"attiva":"disattivata"} · predefinito ${DLAB(m.def)}`;
+const MLL=v=>v===undefined?"predefinito globale":v==="NESSUNO"?"non includerla":v==="A+CC"?"in A e in CC":"in "+v;
+const nCont=c=>Object.values(c).reduce((a,l)=>a+l.length,0);
+function planImport(D,mode,res){const st={newO:0,newC:0,sameC:0,newM:0,ml:0};
+ if(mode==="replace")return{ns:{owners:{...D.assoc},contacts:clone(D.contacts),mlSel:{...D.mlSel},ml:D.ml?{...D.ml}:{...S.ml}},conf:[],un:0,st};
+ const ns={owners:{...S.owners},contacts:clone(S.contacts),mlSel:{...S.mlSel},ml:{...S.ml}},conf=[];
+ Object.entries(D.assoc).forEach(([c,n])=>{if(!(c in ns.owners)){ns.owners[c]=n;st.newO++;return}const cur=ns.owners[c];if(lc(cur)===lc(n))return;
+  const id="o:"+c;conf.push({id,txt:`Codice titolare ${c}: ragione sociale diversa`,cur,imp:n});if(res[id]==="imp")ns.owners[c]=n});
+ Object.entries(D.contacts).forEach(([n0,list])=>{const key=findName(ns.contacts,n0)||n0,tgt=ns.contacts[key]=ns.contacts[key]||[];
+  list.forEach(ic=>{const ex=tgt.find(x=>lc(x.email)===lc(ic.email));if(!ex){tgt.push({...ic});st.newC++;return}
+   const dc=ex.def&&ic.def&&ex.def!==ic.def,nc=ex.name&&ic.name&&ex.name!==ic.name;
+   if(dc||nc){const id="c:"+key+"|"+lc(ex.email);conf.push({id,txt:`${key} — contatto ${ex.email}`,cur:`${ex.name||"(senza nome)"} · predefinito ${DLAB(ex.def)}`,imp:`${ic.name||"(senza nome)"} · predefinito ${DLAB(ic.def)}`});
+    if(res[id]==="imp"){ex.name=ic.name||ex.name;ex.def=ic.def||ex.def}}
+   if(!ex.name&&ic.name)ex.name=ic.name;if(!ex.def&&ic.def)ex.def=ic.def; // completamento di campi vuoti: nessuna informazione persa
+   st.sameC++})});
+ Object.entries(D.mlSel).forEach(([n0,v])=>{const key=findName(ns.mlSel,n0)||n0;if(!(key in ns.mlSel)){ns.mlSel[key]=v;st.newM++;return}
+  if(ns.mlSel[key]===v)return;const id="m:"+key;conf.push({id,txt:`${key} — mailing list ufficio`,cur:MLL(ns.mlSel[key]),imp:MLL(v)});if(res[id]==="imp")ns.mlSel[key]=v});
+ if(D.ml&&D.ml.email){const c=ns.ml;if(!c.email){ns.ml={...D.ml};st.ml=1}
+  else if(!(lc(c.email)===lc(D.ml.email)&&c.name===D.ml.name&&c.on===D.ml.on&&c.def===D.ml.def)){conf.push({id:"ml",txt:"Mailing list dell'ufficio (globale)",cur:fmtML(c),imp:fmtML(D.ml)});if(res.ml==="imp")ns.ml={...D.ml}}}
+ return{ns,conf,un:conf.filter(c=>res[c.id]===undefined).length,st}}
+function impMode(v){IMP.mode=v;renderImp()}
+function impRes(i,v){IMP.res[IMPC[i].id]=v;renderImp()}
+function impAll(v){IMPC.forEach(c=>IMP.res[c.id]=v);renderImp()}
+function closeImp(){IMP=null;$("#im").classList.remove("on")}
+function renderImp(){if(!IMP)return;const D=IMP.D,p=planImport(D,IMP.mode,IMP.res);IMPC=p.conf;
+ const nA=Object.keys(D.assoc).length,nT=Object.keys(D.contacts).length,nC=nCont(D.contacts),nM=Object.keys(D.mlSel).length;
+ const orph=Object.keys(p.ns.contacts).filter(n=>p.ns.contacts[n].length&&!Object.values(p.ns.owners).some(v=>lc(v)===lc(n)));
+ let h=`<div class="row" style="justify-content:space-between"><h2 style="margin:0">Importa configurazione</h2><button onclick="closeImp()">Annulla</button></div>
+ <p class="m">File: ${esc(IMP.name)} · formato versione ${IMP.ver}. Nulla è stato ancora modificato.</p>
+ <div class="card"><b>Contenuto del file</b><br>${nA} associazioni codice–titolare · ${nT} titolari con destinatari (${nC} contatti) · ${nM} scelte mailing list per titolare · mailing list ufficio: ${D.ml&&D.ml.email?esc(fmtML(D.ml)):"non presente"}
+ <details><summary>Associazioni</summary><table>${Object.keys(D.assoc).sort(numCmp).map(c=>`<tr><td>${esc(c)}</td><td>${esc(D.assoc[c])}</td></tr>`).join("")||'<tr><td class="m">Nessuna</td></tr>'}</table></details>
+ <details><summary>Destinatari</summary><table>${Object.entries(D.contacts).map(([n,l])=>`<tr><td><b>${esc(n)}</b></td><td>${l.map(c=>esc((c.name?c.name+" ":"")+c.email+(c.def?" ["+c.def+"]":""))).join("<br>")}</td></tr>`).join("")||'<tr><td class="m">Nessuno</td></tr>'}</table></details></div>`;
+ if(IMP.warn.length)h+=`<div class="card w"><b>Avvisi sul file</b><ul>${IMP.warn.map(w=>`<li>${esc(w)}</li>`).join("")}</ul></div>`;
+ h+=`<div class="card"><b>Come applicare la configurazione?</b><div><label><input type="radio" name="imode" ${IMP.mode==="merge"?"checked":""} onchange="impMode('merge')"> <b>Unisci</b> alla configurazione esistente (aggiunge i nuovi codici e contatti senza cancellare i presenti)</label></div>
+ <div><label><input type="radio" name="imode" ${IMP.mode==="replace"?"checked":""} onchange="impMode('replace')"> <b>Sostituisci</b> la configurazione esistente con quella del file</label></div></div>`;
+ if(IMP.mode==="merge"){h+=`<div class="card">Nuove associazioni: <b>${p.st.newO}</b> · nuovi contatti: <b>${p.st.newC}</b> · contatti già presenti (non duplicati): <b>${p.st.sameC}</b> · nuove scelte mailing list: <b>${p.st.newM}</b>${p.st.ml?" · mailing list ufficio importata":""} · conflitti: <b>${p.conf.length}</b></div>`;
+  if(p.conf.length){h+=`<div class="card"><b>Conflitti da risolvere</b> <span class="m">(scegli quale valore mantenere: nulla viene sovrascritto senza la tua scelta)</span> <button onclick="impAll('cur')">Mantieni tutti gli attuali</button> <button onclick="impAll('imp')">Usa tutti gli importati</button>
+   ${p.conf.map((c,i)=>`<div class="cfl"><b>${esc(c.txt)}</b><div><label><input type="radio" name="cf${i}" ${IMP.res[c.id]==="cur"?"checked":""} onchange="impRes(${i},'cur')"> Mantieni attuale: ${esc(c.cur)}</label></div><div><label><input type="radio" name="cf${i}" ${IMP.res[c.id]==="imp"?"checked":""} onchange="impRes(${i},'imp')"> Usa importato: ${esc(c.imp)}</label></div></div>`).join("")}</div>`}}
+ else{h+=`<div class="card w">⚠ Verranno <b>eliminate</b> le attuali ${Object.keys(S.owners).length} associazioni e ${nCont(S.contacts)} contatti (e le scelte mailing list per titolare), sostituiti da quelli del file.${D.ml?"":" La mailing list ufficio attuale resta invariata (assente nel file)."}</div>`}
+ if(orph.length)h+=`<div class="card w">${orph.length} titolari con destinatari non hanno ancora un codice associato (${orph.slice(0,5).map(esc).join(", ")}${orph.length>5?"…":""}): i loro destinatari saranno utilizzabili solo dopo l'associazione di un codice.</div>`;
+ h+=`<div class="row"><button class="p" onclick="applyImport()" ${IMP.mode==="merge"&&p.un?"disabled":""}>Applica importazione</button><button onclick="closeImp()">Annulla</button></div>${IMP.mode==="merge"&&p.un?`<div class="w">Risolvi tutti i conflitti per poter applicare.</div>`:""}`;
+ $("#imb").innerHTML=h}
+function applyImport(){if(!IMP)return;
+ try{const p=planImport(IMP.D,IMP.mode,IMP.res);if(IMP.mode==="merge"&&p.un){alert("Risolvi tutti i conflitti prima di applicare.");return}
+  if(IMP.mode==="replace"&&!confirm("Sostituire la configurazione esistente con quella importata? Le associazioni e i contatti attuali verranno eliminati."))return;
+  const old={owners:S.owners,contacts:S.contacts,mlSel:S.mlSel,ml:S.ml};
+  Object.assign(S,p.ns); // tutte le verifiche sono già state eseguite: applicazione in un solo passo
+  try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){Object.assign(S,old);alert("Salvataggio non riuscito: la configurazione precedente è stata conservata.");return}
+  const mode=IMP.mode;closeImp();
+  cfgMsg(`<span class="ok">Configurazione importata (${mode==="replace"?"sostituzione":"unione"}): ora ${Object.keys(S.owners).length} associazioni e ${nCont(S.contacts)} contatti.</span>`);
+  render();if($("#st.on"))renderSettings();if($("#ct.on"))renderCart()}
+ catch(e){alert("Importazione non applicata, configurazione invariata: "+e.message)}}
+
+/* ============ AVVIO ============ */
+document.addEventListener("DOMContentLoaded",()=>{render();updCartBtn()});
+</script>
+<header><h1>Verifica di piena efficienza</h1><span id="dbs" class="m"></span><div class="row"><button onclick="openSettings('db')">Database</button><button id="cb" onclick="openCart()">Carrello (0)</button><button class="p" onclick="openSettings()">Impostazioni</button></div></header>
+<main id="main"></main>
+<input type="file" id="impf" accept=".json,application/json" hidden onchange="pickCfg(this.files[0]);this.value=''">
+<div class="modal" id="st"><div class="box" id="stb"></div></div>
+<div class="modal" id="im"><div class="box" id="imb"></div></div>
+<div class="modal" id="ct"><div class="box" id="ctb"></div></div>
+<div class="modal" id="dt"><div class="box" id="dtb"></div></div>
+<div class="modal" id="pv"><div class="box" id="pvb"></div></div>
+<!-- Per uso offline: scarica xlsx.full.min.js accanto a index.html e usa src="xlsx.full.min.js" -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" onerror="console.warn('SheetJS non caricato')"></script>
+</body></html>
